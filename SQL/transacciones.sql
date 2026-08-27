@@ -1,466 +1,321 @@
--- ============================================================
--- TRANSACCIONES.SQL
--- FOOD STORE
--- PostgreSQL 16+
--- 
-
-
--- ============================================================
--- 1. ATOMICIDAD
--- ============================================================
+-- transacciones.sql
+-- TPI Base de Datos - Food Store
 --
--- El procedimiento sp_crear_pedido debe ser atómico.
+-- Requiere:
+--   1. schema.sql
+--   2. objects.sql
+--   3. data.sql
 --
--- Si uno de los productos es inválido, la operación completa
--- debe fallar.
---
--- No debe quedar:
---   - el pedido creado
---   - ni los detalles anteriores
---
--- El TPI exige demostrar este comportamiento.
--- ============================================================
-
-
--- ------------------------------------------------------------
--- 1.1. CONSULTAR ESTADO ANTES
--- ------------------------------------------------------------
-
-SELECT
-    id_pedido,
-    usuario_id,
-    estado_pedido,
-    forma_pago,
-    total_pedido
-FROM pedido
-ORDER BY id_pedido DESC;
-
-
--- ------------------------------------------------------------
--- 1.2. INTENTAR CREAR PEDIDO CON PRODUCTO INEXISTENTE
--- ------------------------------------------------------------
---
--- El producto 999999 no existe.
---
--- El procedimiento debe lanzar una excepción.
--- ============================================================
-
-CALL sp_crear_pedido(
-    2,
-    'EFECTIVO',
-    '[
-        {"producto_id": 1, "cantidad": 1},
-        {"producto_id": 999999, "cantidad": 1}
-    ]'::jsonb
-);
-
-
--- ------------------------------------------------------------
--- 1.3. VERIFICAR QUE NO QUEDÓ EL PEDIDO
--- ------------------------------------------------------------
---
--- Si la llamada anterior falla dentro de una transacción,
--- PostgreSQL revierte las operaciones realizadas.
--- ============================================================
-
-SELECT
-    id_pedido,
-    usuario_id,
-    estado_pedido,
-    forma_pago,
-    total_pedido
-FROM pedido
-ORDER BY id_pedido DESC;
-
-
--- ------------------------------------------------------------
--- 1.4. VERIFICAR DETALLES
--- ------------------------------------------------------------
-
-SELECT
-    id_detallepedido,
-    pedido_id,
-    producto_id,
-    cantidad_detallepedido,
-    precio_unitario,
-    subtotal_detallepedido
-FROM detalle_pedido
-ORDER BY id_detallepedido DESC;
-
-
--- ============================================================
--- 2. TRANSACCIÓN MANUAL CON COMMIT
--- ============================================================
---
--- Las operaciones realizadas dentro de BEGIN quedan
--- confirmadas definitivamente cuando se ejecuta COMMIT.
--- ============================================================
-
-
-BEGIN;
-
-
--- Crear una categoría temporal de prueba.
-
-INSERT INTO categoria (
-    nombre_categoria,
-    descripcion_categoria
-)
-VALUES (
-    'Categoria COMMIT',
-    'Prueba de transacción confirmada'
-);
-
-
--- Verificar que existe dentro de la transacción.
-
-SELECT
-    id_categoria,
-    nombre_categoria,
-    descripcion_categoria
-FROM categoria
-WHERE nombre_categoria = 'Categoria COMMIT';
-
-
--- Confirmar la transacción.
-
-COMMIT;
-
-
--- ------------------------------------------------------------
--- Verificar después del COMMIT
--- ------------------------------------------------------------
-
-SELECT
-    id_categoria,
-    nombre_categoria,
-    descripcion_categoria
-FROM categoria
-WHERE nombre_categoria = 'Categoria COMMIT';
-
-
--- ============================================================
--- 3. TRANSACCIÓN MANUAL CON ROLLBACK
--- ============================================================
---
--- Las operaciones realizadas después de BEGIN se deshacen
--- cuando se ejecuta ROLLBACK.
--- ============================================================
-
-
-BEGIN;
-
-
--- Crear una categoría temporal.
-
-INSERT INTO categoria (
-    nombre_categoria,
-    descripcion_categoria
-)
-VALUES (
-    'Categoria ROLLBACK',
-    'Prueba de transacción revertida'
-);
-
-
--- Verificar que existe dentro de la transacción.
-
-SELECT
-    id_categoria,
-    nombre_categoria,
-    descripcion_categoria
-FROM categoria
-WHERE nombre_categoria = 'Categoria ROLLBACK';
-
-
--- Deshacer la operación.
-
-ROLLBACK;
-
-
--- ------------------------------------------------------------
--- Verificar después del ROLLBACK
--- ------------------------------------------------------------
---
--- Esta consulta debe devolver 0 filas.
--- ------------------------------------------------------------
-
-SELECT
-    id_categoria,
-    nombre_categoria,
-    descripcion_categoria
-FROM categoria
-WHERE nombre_categoria = 'Categoria ROLLBACK';
-
-
--- ============================================================
--- 4. AISLAMIENTO — READ COMMITTED
--- ============================================================
---
--- Esta prueba debe realizarse utilizando DOS SESIONES
--- simultáneas de DBeaver.
---
--- SESIÓN A y SESIÓN B deben estar conectadas a la misma
--- base food_store.
---
--- PostgreSQL utiliza READ COMMITTED como nivel de aislamiento
--- por defecto.
--- ============================================================
-
-
--- ============================================================
--- SESIÓN A
--- ============================================================
-
-BEGIN;
-
-SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
-
-
--- Consultar el stock actual de un producto.
-
-SELECT
-    id_producto,
-    nombre_producto,
-    stock_producto
-FROM producto
-WHERE id_producto = 1;
-
-
--- NO ejecutar COMMIT todavía.
---
--- Mantener abierta esta transacción.
-
-
--- ============================================================
--- SESIÓN B
--- ============================================================
-
-BEGIN;
-
-SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
-
-
--- Modificar el stock del mismo producto.
-
-UPDATE producto
-SET stock_producto = stock_producto - 1
-WHERE id_producto = 1;
-
-
--- Confirmar el cambio.
-
-COMMIT;
-
-
--- ============================================================
--- VOLVER A SESIÓN A
--- ============================================================
---
--- En READ COMMITTED, cada sentencia puede observar datos
--- confirmados por otras transacciones.
--- ============================================================
-
-SELECT
-    id_producto,
-    nombre_producto,
-    stock_producto
-FROM producto
-WHERE id_producto = 1;
-
-
--- Finalizar la transacción de A.
-
-COMMIT;
-
-
--- ============================================================
--- 5. AISLAMIENTO — SERIALIZABLE
--- ============================================================
---
--- Se repite el escenario utilizando SERIALIZABLE.
---
--- PostgreSQL puede abortar una de las transacciones con un
--- error de serialización si detecta una dependencia que no
--- puede mantenerse de forma serializable.
--- ============================================================
-
-
--- ============================================================
--- SESIÓN A
--- ============================================================
-
-BEGIN;
-
-SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
-
-
-SELECT
-    id_producto,
-    nombre_producto,
-    stock_producto
-FROM producto
-WHERE id_producto = 1;
-
-
--- Mantener abierta la transacción.
-
-
--- ============================================================
--- SESIÓN B
--- ============================================================
-
-BEGIN;
-
-SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
-
-
-SELECT
-    id_producto,
-    nombre_producto,
-    stock_producto
-FROM producto
-WHERE id_producto = 1;
-
-
--- Intentar modificar el mismo producto.
-
-UPDATE producto
-SET stock_producto = stock_producto - 1
-WHERE id_producto = 1;
-
-
--- Intentar confirmar.
-
-COMMIT;
-
-
--- ============================================================
--- VOLVER A SESIÓN A
--- ============================================================
---
--- Intentar modificar y confirmar.
---
--- Dependiendo del orden exacto de las operaciones, PostgreSQL
--- puede generar:
---
--- ERROR: could not serialize access due to concurrent update
---
--- Esto demuestra la protección del nivel SERIALIZABLE.
--- ============================================================
-
-UPDATE producto
-SET stock_producto = stock_producto - 1
-WHERE id_producto = 1;
-
-COMMIT;
-
-
--- ============================================================
--- 6. BLOQUEO CON SELECT ... FOR UPDATE
--- ============================================================
---
--- Esta es una de las pruebas más importantes del TPI.
---
--- Dos operadores intentan modificar el mismo producto.
---
--- FOR UPDATE bloquea la fila hasta que termine la transacción.
--- ============================================================
-
-
--- ============================================================
--- SESIÓN A
--- ============================================================
-
-
-BEGIN;
-
-
-SELECT
-    id_producto,
-    nombre_producto,
-    stock_producto
-FROM producto
-WHERE id_producto = 1
-FOR UPDATE;
-
-
 -- IMPORTANTE:
--- NO ejecutar COMMIT todavía.
+-- El escenario de concurrencia requiere DOS SESIONES
+-- independientes de PostgreSQL/DBeaver.
 --
--- La fila queda bloqueada.
 
 
--- ============================================================
--- SESIÓN B
--- ============================================================
 --
--- Ejecutar mientras A mantiene abierta la transacción.
--- ============================================================
+-- 1. ATOMICIDAD
+-- 
+
+
+SELECT COUNT(*) AS pedidos_antes
+FROM pedido
+WHERE usuario_id = 2;
+
+BEGIN;
+
+CALL sp_crear_pedido(
+    2,
+    'EFECTIVO',
+    '[{"producto_id":999999,"cantidad":1}]'::jsonb
+);
+
+ROLLBACK;
+
+
+
+SELECT COUNT(*) AS pedidos_despues_rollback
+FROM pedido
+WHERE usuario_id = 2;
+
+SELECT COUNT(*) AS detalles_pedidos_usuario_2
+FROM detalle_pedido dp
+JOIN pedido p ON p.id_pedido = dp.pedido_id
+WHERE p.usuario_id = 2;
+
+
+--
+-- ATOMICIDAD CON CANTIDAD INVÁLIDA
+-- 
+
+BEGIN;
+
+CALL sp_crear_pedido(
+    2,
+    'TARJETA',
+    '[{"producto_id":1,"cantidad":0}]'::jsonb
+);
+
+ROLLBACK;
+
+
+-- Verificación del estado posterior.
+
+SELECT id_pedido,
+       usuario_id,
+       estado_pedido,
+       total_pedido
+FROM pedido
+WHERE usuario_id = 2
+ORDER BY id_pedido DESC;
+
+
+--
+-- TRANSACCIÓN MANUAL CON ROLLBACK
+--
+
+-- Comprobamos que no exista previamente.
+
+SELECT id_categoria, nombre_categoria
+FROM categoria
+WHERE nombre_categoria = 'Categoria Demo ROLLBACK';
 
 
 BEGIN;
 
+INSERT INTO categoria(
+    nombre_categoria,
+    descripcion_categoria
+)
+VALUES (
+    'Categoria Demo ROLLBACK',
+    'Categoria creada para demostrar ROLLBACK'
+);
 
-SELECT
-    id_producto,
-    nombre_producto,
-    stock_producto
+-- La fila existe dentro de la transacción.
+
+SELECT id_categoria,
+       nombre_categoria,
+       descripcion_categoria
+FROM categoria
+WHERE nombre_categoria = 'Categoria Demo ROLLBACK';
+
+-- Cancelamos la transacción.
+
+ROLLBACK;
+
+
+SELECT id_categoria,
+       nombre_categoria,
+       descripcion_categoria
+FROM categoria
+WHERE nombre_categoria = 'Categoria Demo ROLLBACK';
+
+
+-- 
+-- TRANSACCIÓN MANUAL CON COMMIT
+-- 
+
+BEGIN;
+
+INSERT INTO categoria(
+    nombre_categoria,
+    descripcion_categoria
+)
+VALUES (
+    'Categoria Demo COMMIT',
+    'Categoria creada para demostrar COMMIT'
+)
+RETURNING id_categoria;
+
+
+COMMIT;
+
+SELECT id_categoria,
+       nombre_categoria,
+       descripcion_categoria
+FROM categoria
+WHERE nombre_categoria = 'Categoria Demo COMMIT';
+
+
+--
+-- TRANSACCIÓN REAL: CREAR PEDIDO CORRECTAMENTE
+-- 
+
+BEGIN;
+
+CALL sp_crear_pedido(
+    2,
+    'TRANSFERENCIA',
+    '[{"producto_id":1,"cantidad":1},
+      {"producto_id":9,"cantidad":1}]'::jsonb
+);
+
+-- Comprobamos el pedido creado dentro de la transacción.
+
+SELECT p.id_pedido,
+       p.usuario_id,
+       p.estado_pedido,
+       p.forma_pago,
+       p.total_pedido
+FROM pedido p
+WHERE p.usuario_id = 2
+ORDER BY p.id_pedido DESC
+LIMIT 1;
+
+
+-- Comprobamos sus detalles.
+
+SELECT dp.id_detallepedido,
+       dp.pedido_id,
+       dp.producto_id,
+       dp.cantidad_detallepedido,
+       dp.precio_unitario,
+       dp.subtotal_detallepedido
+FROM detalle_pedido dp
+WHERE dp.pedido_id = (
+    SELECT MAX(id_pedido)
+    FROM pedido
+    WHERE usuario_id = 2
+);
+
+
+-- Confirmamos la transacción.
+
+COMMIT;
+
+
+-- 
+-- VERIFICACIÓN DEL DESCUENTO DE STOCK
+--
+-- El procedimiento descuenta el stock dentro de la misma
+-- transacción.
+--
+
+SELECT id_producto,
+       nombre_producto,
+       stock_producto
+FROM producto
+WHERE id_producto IN (1, 9)
+ORDER BY id_producto;
+
+
+--
+-- CONCURRENCIA - PREPARACIÓN
+--
+-- IMPORTANTE:
+-- Desde este punto se necesitan DOS SESIONES.
+--
+-- Abrir:
+--
+--   SESIÓN A
+--   SESIÓN B
+--
+-- Ambas conectadas a la misma base de datos.
+--
+-- El objetivo es simular dos operadores intentando vender
+-- simultáneamente un producto con stock limitado.
+--
+
+
+--
+-- SESIÓN A
+-- Ejecutar únicamente en la SESIÓN A.
+--
+
+-- SESIÓN A
+
+BEGIN;
+
+-- Consultamos el stock actual.
+
+SELECT id_producto,
+       nombre_producto,
+       stock_producto
+FROM producto
+WHERE id_producto = 1;
+
+
+-- Bloqueamos la fila del producto.
+--
+-- Mientras esta transacción permanezca abierta, otra sesión que
+-- intente hacer SELECT ... FOR UPDATE sobre el mismo producto tendrá que esperar.
+
+SELECT id_producto,
+       nombre_producto,
+       stock_producto
 FROM producto
 WHERE id_producto = 1
 FOR UPDATE;
 
 
--- 
--- VOLVER A SESIÓN A
--- 
+-- IMPORTANTE: No ejecutar COMMIT todavía.
+-- Dejar esta sesión abierta y pasar a SESIÓN B.
 
 
-UPDATE producto
-SET stock_producto = stock_producto - 1
+-- 
+-- SESIÓN B
+-- Ejecutar en una segunda conexión mientras la SESIÓN A mantiene el bloqueo.
+-- 
+
+-- SESIÓN B
+
+BEGIN;
+
+-- Esta consulta puede ejecutarse normalmente.
+
+SELECT id_producto,
+       nombre_producto,
+       stock_producto
+FROM producto
 WHERE id_producto = 1;
 
+SELECT id_producto,
+       nombre_producto,
+       stock_producto
+FROM producto
+WHERE id_producto = 1
+FOR UPDATE;
 
-COMMIT;
 
-
--- 
--- VOLVER A SESIÓN B
+-- La SESIÓN B queda esperando porque la SESIÓN A mantiene bloqueada la fila.
 --
+-- Volvemos a SESIÓN A.
 
 
-SELECT
-    id_producto,
-    nombre_producto,
-    stock_producto
-FROM producto
-WHERE id_producto = 1;
+-- 
+-- SESIÓN A
+-- 
 
-
--- Realizar aquí las validaciones de stock necesarias.
-
+-- SESIÓN A
 
 COMMIT;
 
+
+-- Al hacer COMMIT en SESIÓN A, se libera el bloqueo.
+--
+-- La SESIÓN B puede continuar.
+
+
 -- 
--- PRUEBA DE SOBREVENTA CON sp_crear_pedido
+-- SESIÓN B
 -- 
 
-UPDATE producto
-SET stock_producto = 1,
-    disponible = TRUE
-WHERE id_producto = 6;
+-- SESIÓN B
 
+-- Una vez liberado el bloqueo, esta sesión continúa.
 
--- Verificar.
-
-SELECT
-    id_producto,
-    nombre_producto,
-    stock_producto,
-    disponible
+SELECT id_producto,
+       nombre_producto,
+       stock_producto
 FROM producto
-WHERE id_producto = 6;
+WHERE id_producto = 1;
+
+COMMIT;
+
+
+--
+-- 8. CONCURRENCIA CON sp_crear_pedido
+-- 
 
 
 -- 
@@ -469,29 +324,33 @@ WHERE id_producto = 6;
 
 BEGIN;
 
-
--- Bloquear producto.
-
-SELECT
-    stock_producto,
-    disponible
-FROM producto
-WHERE id_producto = 6
-FOR UPDATE;
-
-
--- Crear pedido para el producto.
-
 CALL sp_crear_pedido(
     2,
     'EFECTIVO',
-    '[
-        {"producto_id": 6, "cantidad": 1}
-    ]'::jsonb
+    '[{"producto_id":1,"cantidad":1}]'::jsonb
 );
 
+-- NO hacer COMMIT todavía.
 
--- Confirmar.
+-- 
+-- SESIÓN B
+--
+-- Ejecutar simultáneamente:
+--
+-- BEGIN;
+--
+-- CALL sp_crear_pedido(
+--     3,
+--     'TARJETA',
+--     '[{"producto_id":1,"cantidad":1}]'::jsonb
+-- );
+--
+-- La SESIÓN B deberá esperar al bloqueo de la SESIÓN A.
+--
+
+-- 
+-- SESIÓN A
+-- 
 
 COMMIT;
 
@@ -499,56 +358,52 @@ COMMIT;
 -- 
 -- SESIÓN B
 -- 
-
-BEGIN;
-
-
-CALL sp_crear_pedido(
-    3,
-    'EFECTIVO',
-    '[
-        {"producto_id": 6, "cantidad": 1}
-    ]'::jsonb
-);
-
-
--- Si se produce la excepción:
-
-ROLLBACK;
-
--- 
--- VERIFICACION FINAL
+-- VERIFICACIÓN FINAL DEL STOCK
 -- 
 
-SELECT
-    id_producto,
-    nombre_producto,
-    stock_producto,
-    disponible
+SELECT id_producto,
+       nombre_producto,
+       stock_producto,
+       disponible,
+       eliminado
 FROM producto
-WHERE id_producto = 6;
+WHERE id_producto = 1;
 
 
--- Ver pedidos generados.
+-- 
+-- VERIFICACIÓN DE PEDIDOS CREADOS
+-- 
 
-SELECT
-    id_pedido,
-    usuario_id,
-    estado_pedido,
-    forma_pago,
-    total_pedido
-FROM pedido
-ORDER BY id_pedido DESC;
+SELECT p.id_pedido,
+       p.usuario_id,
+       p.fecha_pedido,
+       p.estado_pedido,
+       p.forma_pago,
+       p.total_pedido
+FROM pedido p
+WHERE p.usuario_id IN (2, 3)
+ORDER BY p.id_pedido DESC;
 
+-- 
+-- VERIFICACIÓN DE DETALLES
+--
 
--- Ver detalles generados.
+SELECT dp.id_detallepedido,
+       dp.pedido_id,
+       dp.producto_id,
+       dp.cantidad_detallepedido,
+       dp.precio_unitario,
+       dp.subtotal_detallepedido
+FROM detalle_pedido dp
+ORDER BY dp.id_detallepedido DESC
+LIMIT 10;
 
-SELECT
-    id_detallepedido,
-    pedido_id,
-    producto_id,
-    cantidad_detallepedido,
-    precio_unitario,
-    subtotal_detallepedido
-FROM detalle_pedido
-ORDER BY id_detallepedido DESC;
+-- 
+-- VERIFICACIÓN DEL TOTAL CALCULADO
+-- 
+SELECT p.id_pedido,
+       p.total_pedido AS total_guardado,
+       calcular_total_pedido(p.id_pedido) AS total_calculado
+FROM pedido p
+WHERE p.eliminado = FALSE
+ORDER BY p.id_pedido DESC;
